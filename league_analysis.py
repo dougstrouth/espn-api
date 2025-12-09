@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ESPN Fantasy Football League Comparison Tool (2016-2025)
+ESPN Fantasy Football League Comparison Tool (2015-2025)
 Analyzes matchups, rosters, settings, and fairness metrics across multiple years.
 Run this script to compare league data and correlate settings changes with fairness.
 """
@@ -26,7 +26,7 @@ from report_charts import (
 ESPN_S2 = 'AEBvr5lKQnBF4qZ6iAb0dQxlVe%2FFjmDvoodlVueyffeuuWHthnUO5U8URkyOro9P95i5hHi7uVO8rsMDwEfrhM1ocAAbtLKAS2DWchuOib5sE5%2FVGoas05b1tnifeeCOZ0Q5ANyjF3JLYRdrq39OR1a%2BucdWXw7XZELwdX4a7bacXJwa%2FD1izL1Y%2F1KZ%2BxjkC%2BC1at7XtQsf7HHxll8m1WcrclJUtEFNZKoSDRu6alVqBzaf3x6c7WtEzaOplUbSFNhklgDzmJjrK9HHvGnzKmcvJ8I4hhCtm9fNRuIAyu9R2eeMvuyyjxYMRQgw%2F5YkW3twSXx0uVXA3VEl4Zn%2BVV%2FR'
 SWID = '{9A39BAD6-0F58-4406-B9BA-D60F587406D2}'
 LEAGUE_ID = 247704
-YEARS = range(2015, 2026)  # 2016-2025 (range end is exclusive)
+YEARS = range(2014, 2026)  # 2015-2025 (range end is exclusive)
 
 # =============================================================================
 # LOAD LEAGUES
@@ -143,6 +143,32 @@ def analyze_roster_composition(league_obj, year):
     return pd.DataFrame(roster_data)
 
 
+def analyze_team_transactions(league_obj, year):
+    """Summarize transaction activity (drops, trades, IR moves) by team/owner"""
+    rows = []
+    for team in league_obj.teams:
+        owner_list = getattr(team, 'owners', None)
+        owner_single = getattr(team, 'owner', None)
+        owner_name = None
+        if owner_list:
+            owner_name = _normalize_owner_name(owner_list[0])
+        elif owner_single:
+            owner_name = _normalize_owner_name(owner_single)
+        else:
+            owner_name = team.team_name
+        rows.append({
+            'year': year,
+            'team_id': team.team_id,
+            'team_name': team.team_name,
+            'owner': owner_name,
+            'drops': getattr(team, 'drops', 0),
+            'trades': getattr(team, 'trades', 0),
+            'move_to_ir': getattr(team, 'move_to_ir', 0),
+            'acquisitions': getattr(team, 'acquisitions', 0),
+        })
+    return pd.DataFrame(rows)
+
+
 def analyze_projected_fairness(matchups_df):
     """Analyze matchup competitiveness (close games vs blowouts)"""
     if matchups_df.empty:
@@ -184,27 +210,39 @@ def _normalize_owner_name(owner_entry):
         return None
     # If already a string or int, return as string
     if isinstance(owner_entry, (str, int)):
-        return str(owner_entry)
+        raw_name = str(owner_entry)
     # If dict-like with name fields
-    if isinstance(owner_entry, dict):
+    elif isinstance(owner_entry, dict):
         # Prefer displayName when present, otherwise fallback sequence
         if owner_entry.get('displayName'):
-            return str(owner_entry.get('displayName'))
-        for key in ['nickname', 'username', 'name']:
-            val = owner_entry.get(key)
-            if val:
-                return str(val)
-        # Fallback to first/last if present
-        parts = []
-        for key in ['firstName', 'lastName', 'fullName']:
-            val = owner_entry.get(key)
-            if val:
-                parts.append(str(val))
-        if parts:
-            return ' '.join(parts)
-        return str(owner_entry)
-    # Fallback: string representation
-    return str(owner_entry)
+            raw_name = str(owner_entry.get('displayName'))
+        else:
+            found = False
+            for key in ['nickname', 'username', 'name']:
+                val = owner_entry.get(key)
+                if val:
+                    raw_name = str(val)
+                    found = True
+                    break
+            if not found:
+                # Fallback to first/last if present
+                parts = []
+                for key in ['firstName', 'lastName', 'fullName']:
+                    val = owner_entry.get(key)
+                    if val:
+                        parts.append(str(val))
+                if parts:
+                    raw_name = ' '.join(parts)
+                else:
+                    raw_name = str(owner_entry)
+    else:
+        # Fallback: string representation
+        raw_name = str(owner_entry)
+    
+    # Combine ESPNFAN60780178 with GeoffTBlosat
+    if raw_name == 'ESPNFAN60780178':
+        return 'GeoffTBlosat'
+    return raw_name
 
 
 def extract_power_rankings(league_obj, year, week=None):
@@ -344,6 +382,42 @@ if not all_rosters_df.empty:
     player_counts = all_rosters_df.groupby('year')['player'].nunique()
     print("\nUnique Players by Year:")
     print(player_counts.to_string())
+
+# =============================================================================
+# ANALYSIS SECTION 3B: TEAM TRANSACTIONS / ROSTER CHURN
+# =============================================================================
+print("\n" + "=" * 80)
+print("TEAM TRANSACTIONS / ROSTER CHURN")
+print("=" * 80)
+
+transactions_df_by_year = {}
+churn_yearly = pd.DataFrame()
+churn_owner = pd.DataFrame()
+for year, league in leagues.items():
+    df = pd.DataFrame()
+    if league:
+        df = analyze_team_transactions(league, year)
+        transactions_df_by_year[year] = df
+    else:
+        transactions_df_by_year[year] = df
+
+all_transactions_df = pd.concat([df for df in transactions_df_by_year.values() if not df.empty], ignore_index=True)
+
+if not all_transactions_df.empty:
+    churn_yearly = all_transactions_df.groupby('year')[['drops', 'trades', 'move_to_ir']].mean().reset_index()
+    churn_yearly = churn_yearly.rename(columns={
+        'drops': 'avg_drops_per_team',
+        'trades': 'avg_trades_per_team',
+        'move_to_ir': 'avg_move_to_ir_per_team'
+    })
+    print("\nAverage Transactions per Team by Year:")
+    print(churn_yearly.to_string(index=False))
+    churn_owner = all_transactions_df.groupby('owner')[['drops', 'trades', 'move_to_ir']].mean().reset_index()
+    churn_owner = churn_owner.sort_values(['drops', 'trades', 'move_to_ir'], ascending=False)
+    print("\nTop Owner Churn (avg per season):")
+    print(churn_owner.head(10).to_string(index=False))
+else:
+    print("No transaction data available")
 
 # =============================================================================
 # ANALYSIS SECTION 4: POWER RANKINGS (CSV-FIRST)
@@ -650,6 +724,33 @@ if not settings_df.empty and not fairness_df.empty and not diversity_df.empty:
             html_lines.append("<p><em>No roster data for 14-team seasons.</em></p>")
     
     
+    html_lines.append("</div>")
+
+    # Roster churn / transactions
+    html_lines.append("<h2>Roster Churn & Transactions</h2>")
+    html_lines.append("<div class='metric-card'>")
+    if not all_transactions_df.empty and not churn_yearly.empty:
+        html_lines.append("<h3>Average Transactions per Team</h3>")
+        html_lines.append("<table>")
+        html_lines.append("<tr><th>Year</th><th>Avg Drops</th><th>Avg Trades</th><th>Avg Move to IR</th></tr>")
+        for _, row in churn_yearly.iterrows():
+            html_lines.append(
+                f"<tr><td>{int(row['year'])}</td><td>{row['avg_drops_per_team']:.2f}</td><td>{row['avg_trades_per_team']:.2f}</td><td>{row['avg_move_to_ir_per_team']:.2f}</td></tr>"
+            )
+        html_lines.append("</table>")
+
+        if not churn_owner.empty:
+            html_lines.append("<h3>Most Active Owners (avg per season)</h3>")
+            top_owners = churn_owner.head(5)
+            html_lines.append("<table>")
+            html_lines.append("<tr><th>Owner</th><th>Avg Drops</th><th>Avg Trades</th><th>Avg Move to IR</th></tr>")
+            for _, row in top_owners.iterrows():
+                html_lines.append(
+                    f"<tr><td>{row['owner']}</td><td>{row['drops']:.2f}</td><td>{row['trades']:.2f}</td><td>{row['move_to_ir']:.2f}</td></tr>"
+                )
+            html_lines.append("</table>")
+    else:
+        html_lines.append("<p><em>No transaction data available.</em></p>")
     html_lines.append("</div>")
 
     # Team finish diversity by team_id
