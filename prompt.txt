@@ -1,0 +1,4 @@
+I am using pull.ipynb, and have this block already espn_s2 = 'AEBvr5lKQnBF4qZ6iAb0dQxlVe%2FFjmDvoodlVueyffeuuWHthnUO5U8URkyOro9P95i5hHi7uVO8rsMDwEfrhM1ocAAbtLKAS2DWchuOib5sE5%2FVGoas05b1tnifeeCOZ0Q5ANyjF3JLYRdrq39OR1a%2BucdWXw7XZELwdX4a7bacXJwa%2FD1izL1Y%2F1KZ%2BxjkC%2BC1at7XtQsf7HHxll8m1WcrclJUtEFNZKoSDRu6alVqBzaf3x6c7WtEzaOplUbSFNhklgDzmJjrK9HHvGnzKmcvJ8I4hhCtm9fNRuIAyu9R2eeMvuyyjxYMRQgw%2F5YkW3twSXx0uVXA3VEl4Zn%2BVV%2FR'
+swid = '{9A39BAD6-0F58-4406-B9BA-D60F587406D2}'
+# private league with cookies
+league = League(league_id=247704, year=2025, espn_s2=espn_s2, swid=swid) and verified all tests run effectively using my local .venv managed by uv. I want to compare every matchup and the rosters and waiver activity in 2024 vs 2025 because we changed our league settings, I want to verify statistically that projected winners were either more diverse or it was a fairer season in terms of the available pool of players
