@@ -85,3 +85,6 @@ If you find a bug follow the steps below for reporting.
 4. Submit the new issue!
 
 I will try to comment on the issue as soon as possible with my thoughts and possible fix!
+
+
+Chrome extension to get cookie info: https://chromewebstore.google.com/detail/espn-private-league-setup/bjmalaafoepfooflcnhjejnopgefjgia

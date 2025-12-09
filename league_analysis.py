@@ -7,11 +7,18 @@ Run this script to compare league data and correlate settings changes with fairn
 
 import pandas as pd
 import json
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
 from collections import defaultdict
 from espn_api.football import League
+from report_charts import (
+    make_stacked_roster_chart,
+    make_competitiveness_chart,
+    make_matchup_fairness_chart,
+    make_close_vs_blowouts_chart,
+    make_settings_vs_competitiveness_chart,
+    make_multi_metric_dashboard,
+    make_recent_comp_chart,
+    make_finish_std_chart,
+)
 
 # =============================================================================
 # CONFIGURATION
@@ -19,13 +26,13 @@ from espn_api.football import League
 ESPN_S2 = 'AEBvr5lKQnBF4qZ6iAb0dQxlVe%2FFjmDvoodlVueyffeuuWHthnUO5U8URkyOro9P95i5hHi7uVO8rsMDwEfrhM1ocAAbtLKAS2DWchuOib5sE5%2FVGoas05b1tnifeeCOZ0Q5ANyjF3JLYRdrq39OR1a%2BucdWXw7XZELwdX4a7bacXJwa%2FD1izL1Y%2F1KZ%2BxjkC%2BC1at7XtQsf7HHxll8m1WcrclJUtEFNZKoSDRu6alVqBzaf3x6c7WtEzaOplUbSFNhklgDzmJjrK9HHvGnzKmcvJ8I4hhCtm9fNRuIAyu9R2eeMvuyyjxYMRQgw%2F5YkW3twSXx0uVXA3VEl4Zn%2BVV%2FR'
 SWID = '{9A39BAD6-0F58-4406-B9BA-D60F587406D2}'
 LEAGUE_ID = 247704
-YEARS = range(2016, 2026)  # 2016-2025 (range end is exclusive)
+YEARS = range(2015, 2026)  # 2016-2025 (range end is exclusive)
 
 # =============================================================================
 # LOAD LEAGUES
 # =============================================================================
 print("=" * 80)
-print("Loading leagues (2016-2025)...")
+print("Loading leagues (2015-2025)...")
 print("=" * 80)
 
 leagues = {}
@@ -171,6 +178,35 @@ def analyze_win_diversity(matchups_df):
     }
 
 
+def _normalize_owner_name(owner_entry):
+    """Return a hashable owner name from various ESPN owner representations."""
+    if owner_entry is None:
+        return None
+    # If already a string or int, return as string
+    if isinstance(owner_entry, (str, int)):
+        return str(owner_entry)
+    # If dict-like with name fields
+    if isinstance(owner_entry, dict):
+        # Prefer displayName when present, otherwise fallback sequence
+        if owner_entry.get('displayName'):
+            return str(owner_entry.get('displayName'))
+        for key in ['nickname', 'username', 'name']:
+            val = owner_entry.get(key)
+            if val:
+                return str(val)
+        # Fallback to first/last if present
+        parts = []
+        for key in ['firstName', 'lastName', 'fullName']:
+            val = owner_entry.get(key)
+            if val:
+                parts.append(str(val))
+        if parts:
+            return ' '.join(parts)
+        return str(owner_entry)
+    # Fallback: string representation
+    return str(owner_entry)
+
+
 def extract_power_rankings(league_obj, year, week=None):
     """Extract power rankings for a given week (or final week if not specified)"""
     try:
@@ -276,15 +312,28 @@ roster_df_by_year = {}
 
 for year in YEARS:
     df = pd.DataFrame()
+    should_refetch = False
+    
     try:
         df = pd.read_csv(f'roster_{year}.csv')
-        print(f"✓ Loaded roster_{year}.csv")
-    except FileNotFoundError:
-        if leagues.get(year):
-            df = analyze_roster_composition(leagues[year], year)
-            print(f"Analyzed roster composition for {year}")
+        # Check if CSV has expected columns
+        if df.empty or ('player' not in df.columns and 'player_name' not in df.columns):
+            print(f"⚠ roster_{year}.csv is empty or missing expected columns, refetching...")
+            should_refetch = True
         else:
-            print(f"✗ Skipping {year} roster analysis")
+            # Normalize column names - handle both 'player' and 'player_name'
+            if 'player_name' in df.columns and 'player' not in df.columns:
+                df = df.rename(columns={'player_name': 'player'})
+            print(f"✓ Loaded roster_{year}.csv")
+    except FileNotFoundError:
+        should_refetch = True
+    
+    if should_refetch and leagues.get(year):
+        df = analyze_roster_composition(leagues[year], year)
+        df.to_csv(f'roster_{year}.csv', index=False)
+        print(f"✓ Fetched and saved roster_{year}.csv")
+    elif should_refetch:
+        print(f"✗ Skipping {year} roster analysis (no league available)")
     
     roster_df_by_year[year] = df
 
@@ -441,11 +490,16 @@ if not settings_df.empty and not fairness_df.empty and not diversity_df.empty:
         combined = combined.merge(power_spread, on='year', how='left')
     combined = combined.sort_values('year')
     
+    # Calculate actual year range from data
+    min_year = int(combined['year'].min()) if not combined.empty else 2016
+    max_year = int(combined['year'].max()) if not combined.empty else 2025
+    year_range_str = f"{min_year}-{max_year}"
+    
     # Create HTML report with embedded visualizations
     html_lines = []
     html_lines.append("<!DOCTYPE html>")
     html_lines.append("<html><head>")
-    html_lines.append("<title>ESPN Fantasy Football League Analysis (2016-2025)</title>")
+    html_lines.append(f"<title>ESPN Fantasy Football League Analysis ({year_range_str})</title>")
     html_lines.append("<style>")
     html_lines.append("body { font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }")
     html_lines.append("h1 { color: #333; border-bottom: 3px solid #007bff; padding-bottom: 10px; }")
@@ -463,7 +517,20 @@ if not settings_df.empty and not fairness_df.empty and not diversity_df.empty:
     html_lines.append("</style>")
     html_lines.append("</head><body>")
     
-    html_lines.append("<h1>ESPN Fantasy Football League Analysis (2016-2025)</h1>")
+    html_lines.append(f"<h1>ESPN Fantasy Football League Analysis ({year_range_str})</h1>")
+    
+    # Quick Stats Overview
+    html_lines.append("<div class='metric-card'>")
+    html_lines.append("<h2>League Overview</h2>")
+    total_matchups = len(all_matchups_df) if not all_matchups_df.empty else 0
+    total_seasons = len(combined)
+    html_lines.append(f"<p><strong>Total Seasons Analyzed:</strong> {total_seasons} seasons ({year_range_str})</p>")
+    html_lines.append(f"<p><strong>Total Regular Season Matchups:</strong> {total_matchups}</p>")
+    if not settings_df.empty:
+        team_counts = settings_df['team_count'].value_counts().to_dict()
+        format_summary = ', '.join([f"{count} teams ({years} seasons)" for count, years in sorted(team_counts.items())])
+        html_lines.append(f"<p><strong>League Formats:</strong> {format_summary}</p>")
+    html_lines.append("</div>")
     
     # Executive Summary with Min/Max/Mean
     html_lines.append("<h2>Executive Summary: Key Metrics Over Time</h2>")
@@ -486,7 +553,7 @@ if not settings_df.empty and not fairness_df.empty and not diversity_df.empty:
                 min_year = int(combined.loc[values.idxmin(), 'year'])
                 max_year = int(combined.loc[values.idxmax(), 'year'])
                 
-                html_lines.append(f"<div class='metric-card'>")
+                html_lines.append("<div class='metric-card'>")
                 html_lines.append(f"<h3>{label}</h3>")
                 html_lines.append(f"<p><em>{interpretation}</em></p>")
                 html_lines.append(f"<div class='stat'><span class='stat-label'>Min:</span> <span class='stat-value min'>{min_val:.2f} {unit}</span> (Year: {min_year})</div>")
@@ -494,147 +561,303 @@ if not settings_df.empty and not fairness_df.empty and not diversity_df.empty:
                 html_lines.append(f"<div class='stat'><span class='stat-label'>Mean:</span> <span class='stat-value mean'>{mean_val:.2f} {unit}</span></div>")
                 html_lines.append("</div>")
     
-    # Setting Changes
-    html_lines.append("<h2>Major Setting Changes</h2>")
+    # Roster Composition Analysis
+    html_lines.append("<h2>Roster Composition Analysis</h2>")
     html_lines.append("<div class='metric-card'>")
     
-    for col in ['rec_points', 'acquisition_budget', 'playoff_team_count']:
-        if col in settings_df.columns:
-            changes = settings_df[settings_df[col] != settings_df[col].shift(1)]
-            if len(changes) > 1:
-                html_lines.append(f"<h3>{col.replace('_', ' ').title()}</h3>")
-                html_lines.append("<ul>")
-                for _, row in changes.iterrows():
-                    html_lines.append(f"<li>{int(row['year'])}: {row[col]}</li>")
-                html_lines.append("</ul>")
+    if not all_rosters_df.empty:
+        # Position distribution over time
+        position_by_year = all_rosters_df.groupby(['year', 'position']).size().reset_index(name='count')
+        print("[DEBUG] position_by_year head:")
+        print(position_by_year.head())
+        html_lines.append("<h3>Player Pool Size by Year</h3>")
+        player_counts = all_rosters_df.groupby('year')['player'].nunique()
+        print("[DEBUG] player_counts:")
+        print(player_counts)
+        html_lines.append("<table>")
+        html_lines.append("<tr><th>Year</th><th>Unique Players</th></tr>")
+        for year, count in player_counts.items():
+            html_lines.append(f"<tr><td>{int(year)}</td><td>{count}</td></tr>")
+        html_lines.append("</table>")
+
+        html_lines.append("<h3>Position Distribution Trends</h3>")
+        html_lines.append("<p><em>Shows how roster composition has evolved over time</em></p>")
+
+        # Create position distribution chart
+        try:
+            pivot_positions = position_by_year.pivot(index='year', columns='position', values='count').fillna(0)
+            print("[DEBUG] pivot_positions head:")
+            print(pivot_positions.head())
+            chart_html = make_stacked_roster_chart(
+                pivot_positions,
+                title='Position Distribution by Year (Stacked)',
+                div_id='roster_chart',
+                height=500,
+            )
+            if chart_html:
+                html_lines.append(chart_html)
+            else:
+                html_lines.append("<p><em>Position distribution data is empty. Check roster CSVs and extraction logic.</em></p>")
+        except Exception as e:
+            print(f"[ERROR] Failed to generate roster chart: {e}")
+            html_lines.append(f"<p><em>Error generating roster chart: {e}</em></p>")
+    else:
+        print("[ERROR] all_rosters_df is empty. No roster data available.")
+        html_lines.append("<p><em>No roster data available</em></p>")
     
+    # 14-Team Seasons Roster Breakdown
+    if not all_rosters_df.empty and 'team_count' in settings_df.columns:
+        fourteen_years = settings_df[settings_df['team_count'] == 14]['year'].tolist()
+        roster_14_df = all_rosters_df[all_rosters_df['year'].isin(fourteen_years)]
+        # Drop years with zero players (likely missing/ongoing data)
+        player_counts_14 = roster_14_df.groupby('year')['player'].nunique()
+        valid_years_14 = player_counts_14[player_counts_14 > 0].index.tolist()
+        roster_14_df = roster_14_df[roster_14_df['year'].isin(valid_years_14)]
+        if not roster_14_df.empty:
+            html_lines.append("<h3>14-Team Seasons: Roster Composition</h3>")
+            position_by_year_14 = roster_14_df.groupby(['year', 'position']).size().reset_index(name='count')
+            print("[DEBUG] 14-team position_by_year head:")
+            print(position_by_year_14.head())
+            player_counts_14 = roster_14_df.groupby('year')['player'].nunique()
+            print("[DEBUG] 14-team player_counts:")
+            print(player_counts_14)
+            html_lines.append("<table>")
+            html_lines.append("<tr><th>Year</th><th>Unique Players</th></tr>")
+            for year, count in player_counts_14.items():
+                html_lines.append(f"<tr><td>{int(year)}</td><td>{count}</td></tr>")
+            html_lines.append("</table>")
+            if len(player_counts_14) < 2:
+                html_lines.append("<p><em>Only one 14-team season with roster data is available; stacked trend will plot as single points.</em></p>")
+
+            try:
+                pivot_positions_14 = position_by_year_14.pivot(index='year', columns='position', values='count').fillna(0)
+                print("[DEBUG] 14-team pivot_positions head:")
+                print(pivot_positions_14.head())
+                chart_html = make_stacked_roster_chart(
+                    pivot_positions_14,
+                    title='14-Team Seasons: Position Distribution (Stacked)',
+                    div_id='roster_chart_14',
+                    height=450,
+                )
+                if chart_html:
+                    html_lines.append(chart_html)
+                else:
+                    html_lines.append("<p><em>14-team position distribution is empty. Verify roster data for those seasons.</em></p>")
+            except Exception as e:
+                print(f"[ERROR] Failed to generate 14-team roster chart: {e}")
+                html_lines.append(f"<p><em>Error generating 14-team roster chart: {e}</em></p>")
+        else:
+            html_lines.append("<p><em>No roster data for 14-team seasons.</em></p>")
+    
+    
+    html_lines.append("</div>")
+
+    # Team finish diversity by team_id
+    html_lines.append("<h2>Team Finish Diversity (by Team ID)</h2>")
+    html_lines.append("<div class='metric-card'>")
+    team_finishes = []
+    for year, league in leagues.items():
+        if league:
+            for team in league.teams:
+                finish = getattr(team, 'final_standing', None)
+                if finish is None:
+                    finish = getattr(team, 'standing', None)
+                # Prefer owner/manager name; fallback to team name
+                owner_list = getattr(team, 'owners', None)
+                owner_single = getattr(team, 'owner', None)
+                owner_name = None
+                if owner_list:
+                    owner_name = _normalize_owner_name(owner_list[0])
+                elif owner_single:
+                    owner_name = _normalize_owner_name(owner_single)
+                else:
+                    owner_name = team.team_name
+                # Exclude ongoing seasons where finish is 0
+                if finish is not None and finish != 0 and owner_name is not None:
+                    team_finishes.append({
+                        'year': year,
+                        'owner': owner_name,
+                        'team_name': team.team_name,
+                        'final_standing': finish
+                    })
+    team_finishes_df = pd.DataFrame(team_finishes)
+    if not team_finishes_df.empty:
+        finish_diversity = team_finishes_df.groupby('owner')['final_standing'].agg(['mean', 'std', 'min', 'max', 'count']).reset_index()
+        finish_diversity = finish_diversity.rename(columns={
+            'owner': 'Owner',
+            'mean': 'Avg Finish',
+            'std': 'Finish Std',
+            'min': 'Best',
+            'max': 'Worst',
+            'count': 'Seasons'
+        })
+        # Round numeric values for readability
+        for col in ['Avg Finish', 'Finish Std']:
+            finish_diversity[col] = finish_diversity[col].round(2)
+        html_lines.append(finish_diversity.to_html(index=False, border=0))
+
+        chart_html = make_finish_std_chart(finish_diversity)
+        if chart_html:
+            html_lines.append(chart_html)
+    else:
+        html_lines.append("<p><em>No team finish data available.</em></p>")
     html_lines.append("</div>")
     
     # Create Plotly visualizations
     print("\nGenerating interactive charts...")
     
     # Chart 1: Competitiveness Trend (CV over time)
-    if 'cv' in combined.columns:
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(
-            x=combined['year'],
-            y=combined['cv'],
-            mode='lines+markers',
-            name='CV',
-            line=dict(color='#007bff', width=3),
-            marker=dict(size=10)
-        ))
-        fig1.add_hline(y=combined['cv'].mean(), line_dash="dash", line_color="orange",
-                      annotation_text=f"Mean: {combined['cv'].mean():.2f}%")
-        fig1.update_layout(
-            title='League Competitiveness Over Time (Lower = More Competitive)',
-            xaxis_title='Year',
-            yaxis_title='Coefficient of Variation (%)',
-            template='plotly_white',
-            height=500
-        )
+    chart_html = make_competitiveness_chart(combined)
+    if chart_html:
         html_lines.append("<h2>Competitiveness Trend</h2>")
-        html_lines.append(fig1.to_html(include_plotlyjs='cdn', div_id='cv_chart'))
+        html_lines.append("<p><strong>Interpretation:</strong> Lower values indicate more competitive balance (wins spread across teams). Higher values suggest domination by fewer teams.</p>")
+        html_lines.append(chart_html)
     
     # Chart 2: Matchup Fairness Metrics
-    if 'avg_differential' in combined.columns and 'close_matchups_pct' in combined.columns:
-        fig2 = make_subplots(
-            rows=2, cols=1,
-            subplot_titles=('Average Score Differential', 'Close Matchups Percentage'),
-            vertical_spacing=0.15
-        )
-        
-        fig2.add_trace(go.Bar(
-            x=combined['year'],
-            y=combined['avg_differential'],
-            name='Avg Differential',
-            marker_color='#28a745'
-        ), row=1, col=1)
-        
-        fig2.add_trace(go.Scatter(
-            x=combined['year'],
-            y=combined['close_matchups_pct'],
-            mode='lines+markers',
-            name='Close Matchups %',
-            line=dict(color='#dc3545', width=3),
-            marker=dict(size=8)
-        ), row=2, col=1)
-        
-        fig2.update_xaxes(title_text="Year", row=2, col=1)
-        fig2.update_yaxes(title_text="Points", row=1, col=1)
-        fig2.update_yaxes(title_text="Percentage (%)", row=2, col=1)
-        fig2.update_layout(height=700, template='plotly_white', showlegend=False)
-        
+    chart_html = make_matchup_fairness_chart(combined)
+    if chart_html:
         html_lines.append("<h2>Matchup Fairness Analysis</h2>")
-        html_lines.append(fig2.to_html(include_plotlyjs='cdn', div_id='fairness_chart'))
+        html_lines.append("<p><strong>Interpretation:</strong> Lower score differentials and higher percentages of close matchups indicate more competitive/exciting games.</p>")
+        html_lines.append(chart_html)
+    
+    # Chart 2b: Close vs Blowouts Trend
+    chart_html = make_close_vs_blowouts_chart(combined)
+    if chart_html:
+        html_lines.append("<h2>Close vs Blowouts</h2>")
+        html_lines.append("<p><strong>Interpretation:</strong> Higher close-matchup percentage with lower blowout percentage indicates healthier balance.</p>")
+        html_lines.append(chart_html)
     
     # Chart 3: Settings vs Competitiveness Correlation
-    if 'rec_points' in combined.columns and 'cv' in combined.columns:
-        fig3 = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        fig3.add_trace(go.Bar(
-            x=combined['year'],
-            y=combined['rec_points'],
-            name='PPR Points',
-            marker_color='rgba(0, 123, 255, 0.6)'
-        ), secondary_y=False)
-        
-        fig3.add_trace(go.Scatter(
-            x=combined['year'],
-            y=combined['cv'],
-            mode='lines+markers',
-            name='CV',
-            line=dict(color='#ff6b6b', width=3),
-            marker=dict(size=10)
-        ), secondary_y=True)
-        
-        fig3.update_xaxes(title_text="Year")
-        fig3.update_yaxes(title_text="PPR Points per Reception", secondary_y=False)
-        fig3.update_yaxes(title_text="Coefficient of Variation (%)", secondary_y=True)
-        fig3.update_layout(
-            title='PPR Setting vs League Competitiveness',
-            template='plotly_white',
-            height=500
-        )
-        
+    chart_html = make_settings_vs_competitiveness_chart(combined)
+    if chart_html:
         html_lines.append("<h2>Settings Impact on Competitiveness</h2>")
-        html_lines.append(fig3.to_html(include_plotlyjs='cdn', div_id='settings_chart'))
+        html_lines.append("<p><strong>Interpretation:</strong> Compare PPR changes (bars) with CV trend (line) to see if scoring rule changes affected competitive balance.</p>")
+        html_lines.append(chart_html)
     
     # Chart 4: Multi-metric Dashboard
-    if all(col in combined.columns for col in ['cv', 'avg_differential', 'close_matchups_pct', 'blowouts_pct']):
-        fig4 = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('Win Diversity (CV)', 'Avg Score Differential', 
-                          'Close Matchups %', 'Blowouts %')
-        )
-        
-        fig4.add_trace(go.Scatter(x=combined['year'], y=combined['cv'], 
-                                 mode='lines+markers', name='CV',
-                                 line=dict(color='#007bff')), row=1, col=1)
-        
-        fig4.add_trace(go.Scatter(x=combined['year'], y=combined['avg_differential'],
-                                 mode='lines+markers', name='Avg Diff',
-                                 line=dict(color='#28a745')), row=1, col=2)
-        
-        fig4.add_trace(go.Scatter(x=combined['year'], y=combined['close_matchups_pct'],
-                                 mode='lines+markers', name='Close %',
-                                 line=dict(color='#ffc107')), row=2, col=1)
-        
-        fig4.add_trace(go.Scatter(x=combined['year'], y=combined['blowouts_pct'],
-                                 mode='lines+markers', name='Blowouts %',
-                                 line=dict(color='#dc3545')), row=2, col=2)
-        
-        fig4.update_layout(height=700, template='plotly_white', showlegend=False)
-        
+    chart_html = make_multi_metric_dashboard(combined)
+    if chart_html:
         html_lines.append("<h2>Multi-Metric Dashboard</h2>")
-        html_lines.append(fig4.to_html(include_plotlyjs='cdn', div_id='dashboard'))
+        html_lines.append("<p><strong>Interpretation:</strong> Compare all key metrics across years to identify patterns and outliers.</p>")
+        html_lines.append(chart_html)
     
-    # Year-by-year table
+    # Recent Trends Analysis (2023-2025)
+    html_lines.append("<h2>Recent Trends (2023-2025 Deep Dive)</h2>")
+    html_lines.append("<div class='metric-card'>")
+    
+    recent_years = combined[combined['year'] >= 2023].copy()
+    if len(recent_years) > 0:
+        html_lines.append("<h3>Recent Performance Summary</h3>")
+        html_lines.append("<p><em>Focused analysis on the most recent seasons</em></p>")
+        
+        for metric, label, unit, better in [
+            ('cv', 'Competitiveness (CV)', '%', 'lower'),
+            ('avg_differential', 'Average Score Differential', 'points', 'lower'),
+            ('close_matchups_pct', 'Close Matchups', '%', 'higher'),
+            ('power_std', 'Power Rankings Spread', 'points', 'lower')
+        ]:
+            if metric in recent_years.columns:
+                values = recent_years[metric].dropna()
+                if len(values) > 0:
+                    trend = "improving" if (values.iloc[-1] < values.iloc[0]) == (better == 'lower') else "declining"
+                    change = values.iloc[-1] - values.iloc[0]
+                    html_lines.append(f"<p><strong>{label}:</strong> ")
+                    html_lines.append(f"{values.iloc[0]:.2f} ({int(recent_years.iloc[0]['year'])}) → ")
+                    html_lines.append(f"{values.iloc[-1]:.2f} ({int(recent_years.iloc[-1]['year'])}) ")
+                    html_lines.append(f"<span style='color: {'green' if trend == 'improving' else 'red'};'>({change:+.2f} - {trend})</span></p>")
+        
+        chart_html = make_recent_comp_chart(recent_years)
+        if chart_html:
+            html_lines.append(chart_html)
+    
+    html_lines.append("</div>")
+    
+    # Year-over-Year Changes Analysis
+    html_lines.append("<h2>Year-over-Year Trend Analysis</h2>")
+    html_lines.append("<div class='metric-card'>")
+    html_lines.append("<h3>Biggest Changes Between Seasons</h3>")
+    if len(combined) > 1:
+        changes = combined.copy()
+        for metric in ['cv', 'avg_differential', 'close_matchups_pct', 'blowouts_pct']:
+            if metric in changes.columns:
+                changes[f'{metric}_change'] = changes[metric].diff()
+        
+        # Find biggest improvements/declines
+        if 'cv_change' in changes.columns:
+            max_improvement = changes.loc[changes['cv_change'].idxmin()] if changes['cv_change'].notna().any() else None
+            max_decline = changes.loc[changes['cv_change'].idxmax()] if changes['cv_change'].notna().any() else None
+            if max_improvement is not None:
+                html_lines.append(f"<p><strong>Most Competitive Improvement:</strong> {int(max_improvement['year'])} (CV decreased by {abs(max_improvement['cv_change']):.2f}%)</p>")
+            if max_decline is not None:
+                html_lines.append(f"<p><strong>Biggest Competitive Decline:</strong> {int(max_decline['year'])} (CV increased by {max_decline['cv_change']:.2f}%)</p>")
+        
+        if 'close_matchups_pct_change' in changes.columns:
+            best_close = changes.loc[changes['close_matchups_pct_change'].idxmax()] if changes['close_matchups_pct_change'].notna().any() else None
+            if best_close is not None and best_close['close_matchups_pct_change'] > 0:
+                html_lines.append(f"<p><strong>Best Year for Close Games:</strong> {int(best_close['year'])} (+{best_close['close_matchups_pct_change']:.2f}% close matchups vs prior year)</p>")
+    html_lines.append("</div>")
+    
+    # Key Takeaways
+    html_lines.append("<h2>Key Insights & Recommendations</h2>")
+    html_lines.append("<div class='metric-card'>")
+    html_lines.append("<h3>League Health Summary</h3>")
+    
+    # Competitive balance insight
+    if 'cv' in combined.columns:
+        recent_cv = combined[combined['year'] >= 2023]['cv'].mean() if len(combined[combined['year'] >= 2023]) > 0 else None
+        historical_cv = combined[combined['year'] < 2023]['cv'].mean() if len(combined[combined['year'] < 2023]) > 0 else None
+        if recent_cv and historical_cv:
+            if recent_cv < historical_cv:
+                html_lines.append(f"<p>✅ <strong>Competitive Balance:</strong> Recent seasons ({recent_cv:.1f}% CV) are MORE competitive than historical average ({historical_cv:.1f}% CV)</p>")
+            else:
+                html_lines.append(f"<p>⚠️ <strong>Competitive Balance:</strong> Recent seasons ({recent_cv:.1f}% CV) are LESS competitive than historical average ({historical_cv:.1f}% CV)</p>")
+    
+    # Blowout trend
+    if 'blowouts_pct' in combined.columns:
+        recent_blowouts = combined[combined['year'] >= 2023]['blowouts_pct'].mean() if len(combined[combined['year'] >= 2023]) > 0 else None
+        if recent_blowouts:
+            if recent_blowouts > 60:
+                html_lines.append(f"<p>⚠️ <strong>Matchup Quality:</strong> High blowout rate in recent seasons ({recent_blowouts:.1f}%). Consider roster/scoring adjustments.</p>")
+            elif recent_blowouts < 50:
+                html_lines.append(f"<p>✅ <strong>Matchup Quality:</strong> Good balance with {recent_blowouts:.1f}% blowouts in recent seasons.</p>")
+    
+    # Team count impact
+    if not settings_df.empty and 'team_count' in settings_df.columns:
+        team_count_years = settings_df.groupby('team_count')['year'].apply(list).to_dict()
+        if len(team_count_years) > 1:
+            html_lines.append("<h3>League Format Changes</h3>")
+            for team_count, years in sorted(team_count_years.items()):
+                year_list = ', '.join([str(int(y)) for y in sorted(years)])
+                html_lines.append(f"<p><strong>{team_count}-Team Format:</strong> {year_list}</p>")
+    
+    html_lines.append("</div>")
+    
+    # Year-by-year table (readable labels)
     html_lines.append("<h2>Year-by-Year Detailed Metrics</h2>")
     html_lines.append("<div class='metric-card'>")
-    cols = ['year', 'rec_points', 'acquisition_budget', 'avg_differential', 'close_matchups_pct', 'blowouts_pct', 'cv', 'power_std']
+    cols = [
+        'year', 'team_count', 'playoff_team_count', 'rec_points',
+        'avg_differential', 'close_matchups_pct', 'blowouts_pct', 'cv', 'power_std'
+    ]
     available_cols = [c for c in cols if c in combined.columns]
-    html_lines.append(combined[available_cols].to_html(index=False, border=0))
+    display_df = combined[available_cols].copy()
+    rename_map = {
+        'year': 'Year',
+        'team_count': 'Teams',
+        'playoff_team_count': 'Playoff Teams',
+        'rec_points': 'PPR pts/rec',
+        'avg_differential': 'Avg Diff (pts)',
+        'close_matchups_pct': 'Close % (<5)',
+        'blowouts_pct': 'Blowouts % (>20)',
+        'cv': 'Win CV (%)',
+        'power_std': 'Power Std'
+    }
+    display_df = display_df.rename(columns=rename_map)
+    # Round numeric columns to keep the table readable
+    for col in display_df.columns:
+        if col != 'Year':
+            display_df[col] = display_df[col].apply(lambda v: f"{v:.2f}" if isinstance(v, (int, float, float)) else v)
+    html_lines.append(display_df.to_html(index=False, border=0))
     html_lines.append("</div>")
     
     html_lines.append("</body></html>")
